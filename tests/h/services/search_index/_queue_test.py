@@ -136,9 +136,8 @@ class TestQueue:
 
 class TestSync:
     def test_it_does_nothing_if_the_queue_is_empty(self, batch_indexer, queue):
-        counts = queue.sync(LIMIT)
+        queue.sync(LIMIT)
 
-        assert counts == {}
         batch_indexer.index.assert_not_called()
 
     def test_it_ignores_jobs_that_arent_scheduled_yet(
@@ -146,9 +145,8 @@ class TestSync:
     ):
         add_all(schedule_in=ONE_WEEK_IN_SECONDS)
 
-        counts = queue.sync(LIMIT)
+        queue.sync(LIMIT)
 
-        assert counts == {}
         batch_indexer.index.assert_not_called()
 
     @pytest.mark.usefixtures("with_queued_annotations")
@@ -169,9 +167,8 @@ class TestSync:
         job = db_session.query(Job).one()
         job.expires_at = now - datetime_.timedelta(minutes=1)
 
-        counts = queue.sync(LIMIT)
+        queue.sync(LIMIT)
 
-        assert counts == {}
         batch_indexer.index.assert_not_called()
         assert db_session.query(Job).all() == [job]
 
@@ -181,14 +178,8 @@ class TestSync:
     ):
         add_all(force=True)
 
-        counts = queue.sync(LIMIT)
+        queue.sync(LIMIT)
 
-        assert counts == {
-            Queue.Result.SYNCED_FORCED: LIMIT,
-            Queue.Result.COMPLETED_FORCED: LIMIT,
-            Queue.Result.SYNCED_TOTAL: LIMIT,
-            Queue.Result.COMPLETED_TOTAL: LIMIT,
-        }
         assert db_session.query(Job).all() == []
         batch_indexer.index.assert_called_once_with(
             Any.list.containing(annotation_ids).only()
@@ -202,12 +193,8 @@ class TestSync:
 
         add_all()
 
-        counts = queue.sync(LIMIT)
+        queue.sync(LIMIT)
 
-        assert counts == {
-            Queue.Result.COMPLETED_DELETED: LIMIT,
-            Queue.Result.COMPLETED_TOTAL: LIMIT,
-        }
         assert db_session.query(Job).all() == []
 
     def test_if_the_annotation_is_marked_as_deleted_in_the_DB_it_deletes_the_job_from_the_queue(
@@ -218,24 +205,16 @@ class TestSync:
 
         add_all()
 
-        counts = queue.sync(LIMIT)
+        queue.sync(LIMIT)
 
-        assert counts == {
-            Queue.Result.COMPLETED_DELETED: LIMIT,
-            Queue.Result.COMPLETED_TOTAL: LIMIT,
-        }
         assert db_session.query(Job).all() == []
 
     @pytest.mark.usefixtures("with_queued_annotations")
     def test_if_the_annotation_is_missing_from_Elastic_it_indexes_it(
         self, annotation_ids, batch_indexer, queue
     ):
-        counts = queue.sync(LIMIT)
+        queue.sync(LIMIT)
 
-        assert counts == {
-            Queue.Result.SYNCED_MISSING: LIMIT,
-            Queue.Result.SYNCED_TOTAL: LIMIT,
-        }
         batch_indexer.index.assert_called_once_with(
             Any.list.containing(annotation_ids).only()
         )
@@ -244,12 +223,8 @@ class TestSync:
     def test_if_the_annotation_is_already_in_Elastic_it_removes_the_job_from_the_queue(
         self, batch_indexer, db_session, queue
     ):
-        counts = queue.sync(LIMIT)
+        queue.sync(LIMIT)
 
-        assert counts == {
-            Queue.Result.COMPLETED_UP_TO_DATE: LIMIT,
-            Queue.Result.COMPLETED_TOTAL: LIMIT,
-        }
         assert db_session.query(Job).all() == []
         batch_indexer.index.assert_not_called()
 
@@ -262,12 +237,8 @@ class TestSync:
         for annotation in annotations:
             annotation.updated = now
 
-        counts = queue.sync(LIMIT)
+        queue.sync(LIMIT)
 
-        assert counts == {
-            Queue.Result.SYNCED_DIFFERENT: LIMIT,
-            Queue.Result.SYNCED_TOTAL: LIMIT,
-        }
         batch_indexer.index.assert_called_once_with(
             Any.list.containing(annotation_ids).only()
         )
@@ -280,12 +251,8 @@ class TestSync:
         for annotation in annotations:
             annotation.userid = "new_userid"
 
-        counts = queue.sync(LIMIT)
+        queue.sync(LIMIT)
 
-        assert counts == {
-            Queue.Result.SYNCED_DIFFERENT: LIMIT,
-            Queue.Result.SYNCED_TOTAL: LIMIT,
-        }
         batch_indexer.index.assert_called_once_with(
             Any.list.containing(annotation_ids).only()
         )
@@ -295,13 +262,9 @@ class TestSync:
     ):
         add_all(ids=[annotation_ids[0] for _ in range(LIMIT)])
 
-        counts = queue.sync(LIMIT)
+        queue.sync(LIMIT)
 
         # It only syncs the annotation to Elasticsearch once.
-        assert counts == {
-            Queue.Result.SYNCED_MISSING: LIMIT,
-            Queue.Result.SYNCED_TOTAL: LIMIT,
-        }
         batch_indexer.index.assert_called_once_with(
             Any.list.containing([annotation_ids[0]]).only()
         )
@@ -312,14 +275,54 @@ class TestSync:
         add_all(ids=[annotations[0].id for _ in range(LIMIT)])
         index([annotations[0]])
 
-        counts = queue.sync(LIMIT)
+        queue.sync(LIMIT)
 
-        assert counts == {
-            Queue.Result.COMPLETED_UP_TO_DATE: LIMIT,
-            Queue.Result.COMPLETED_TOTAL: LIMIT,
-        }
         assert db_session.query(Job).all() == []
         batch_indexer.index.assert_not_called()
+
+    def test_metrics(self, factories, index, now, queue):
+        def add_job(
+            tag="tag_1", indexed=True, force=False, updated=False, deleted=False
+        ):
+            """Create an annotation and a sync_annotation job for it."""
+            annotation = factories.Annotation()
+
+            queue.add_by_id(annotation.id, tag=tag, force=force, schedule_in=-1000)
+
+            if indexed:
+                # The annotation is already in Elasticsearch.
+                index([annotation])
+
+            if updated:
+                # The annotation has been updated since being indexed.
+                annotation.updated = now + ONE_WEEK
+
+            if deleted:
+                # The annotation has been deleted since being indexed.
+                annotation.deleted = True
+
+        add_job()
+        add_job(indexed=False)
+        add_job(updated=True)
+        add_job(tag="tag_2", force=True)
+        add_job(deleted=True)
+
+        counts = queue.sync(1000)
+
+        assert counts == {
+            Queue.Result.SYNCED_MISSING.format(tag="tag_1"): 1,
+            Queue.Result.SYNCED_DIFFERENT.format(tag="tag_1"): 1,
+            Queue.Result.SYNCED_TAG_TOTAL.format(tag="tag_1"): 2,
+            Queue.Result.SYNCED_FORCED.format(tag="tag_2"): 1,
+            Queue.Result.SYNCED_TAG_TOTAL.format(tag="tag_2"): 1,
+            Queue.Result.SYNCED_TOTAL: 3,
+            Queue.Result.COMPLETED_UP_TO_DATE.format(tag="tag_1"): 1,
+            Queue.Result.COMPLETED_DELETED.format(tag="tag_1"): 1,
+            Queue.Result.COMPLETED_TAG_TOTAL.format(tag="tag_1"): 2,
+            Queue.Result.COMPLETED_FORCED.format(tag="tag_2"): 1,
+            Queue.Result.COMPLETED_TAG_TOTAL.format(tag="tag_2"): 1,
+            Queue.Result.COMPLETED_TOTAL: 3,
+        }
 
     @pytest.fixture
     def annotations(self, factories, now):
