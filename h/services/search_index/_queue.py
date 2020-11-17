@@ -199,9 +199,6 @@ class Queue:
 
         return counts
 
-    def count(self, tags=None, hide_scheduled=True):
-        return self._job_query(tags=tags, hide_scheduled=hide_scheduled).count()
-
     def _get_jobs_from_queue(self, limit):
         return (
             self._job_query()
