@@ -64,8 +64,8 @@ class TestSyncAnnotations:
         log.info.assert_called_once_with(search_index.sync.return_value)
         newrelic.agent.record_custom_metrics.assert_called_once_with(
             [
-                ("Custom/SyncAnnotations/Queue/foo", 2),
-                ("Custom/SyncAnnotations/Queue/bar", 3),
+                ("Custom/JobQueue/Name/sync_annotation/Result/foo", 2),
+                ("Custom/JobQueue/Name/sync_annotation/Result/bar", 3),
             ]
         )
 

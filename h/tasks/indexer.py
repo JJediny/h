@@ -45,7 +45,7 @@ def sync_annotations(limit):
     log.info(dict(counts))
     newrelic.agent.record_custom_metrics(
         [
-            (f"Custom/SyncAnnotations/Queue/{key}", value)
+            (f"Custom/JobQueue/Name/sync_annotation/Result/{key}", value)
             for key, value in counts.items()
         ]
     )
